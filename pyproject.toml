@@ -1,0 +1,27 @@
+[project]
+name = "iox2-jsonrpc"
+version = "0.3.0"
+description = "Tiny JSON-RPC 2.0 over iceoryx2 with a FastAPI control gateway"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "iceoryx2>=0.9.1",
+  "pydantic>=2.8.0",
+  "uvicorn>=0.30.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.envs.default]
+dependencies = [
+  "pytest",
+]
+
+[tool.hatch.envs.default.scripts]
+build-install = [
+  "python -m build",
+  "uv install .",
+]

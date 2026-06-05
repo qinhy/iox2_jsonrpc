@@ -1,0 +1,7 @@
+[services.serverA]
+iceoryx2_service = "jsonrpc/serverA"
+timeout_seconds = 5.0
+
+[services.serverB]
+iceoryx2_service = "jsonrpc/serverB"
+timeout_seconds = 5.0
