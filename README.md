@@ -1,186 +1,207 @@
-# iox2-jsonrpc-simple
+# iox2-jsonrpc
 
-Tiny JSON-RPC 2.0 over **iceoryx2**, with a central FastAPI control gateway.
+Typed JSON-RPC 2.0 helpers for Python controllers, with optional iceoryx2
+request-response transport.
 
-This repo is intentionally simple:
+The core package lets you expose public methods on a controller as JSON-RPC
+methods when those methods use Pydantic models for both parameters and results.
+The iceoryx2 integration publishes the controller over IPC and exposes a schema
+endpoint that clients can discover at runtime.
 
-- `uv` project
-- OOP-style Python code
-- no pytest dependency by default
-- no TCP fallback
-- no in-memory fallback
-- no bundled iceoryx2 build
-- internal communication is only iceoryx2 request-response
-- FastAPI is only the external HTTP control plane
+## Features
 
-Important: this repo does **not** install or build `iceoryx2` for you. It expects this to work in your environment:
+- JSON-RPC 2.0 request and response models
+- Pydantic validation for method parameters and result schemas
+- Controller introspection for typed public methods
+- In-process endpoint for local dispatch and testing
+- Optional iceoryx2 server, service discovery, schema loading, and client calls
 
-```bash
-python -c "import iceoryx2; print('iceoryx2 OK')"
-```
+## Requirements
 
-## Install runtime dependencies
+- Python 3.11 or newer
+- `uv` for the commands below
+- `iceoryx2` available in your environment when using IPC transport
+
+The in-process endpoint only needs the package runtime dependencies. The
+iceoryx2 transport imports `iceoryx2` lazily from `iox2_jsonrpc.iceoryx`.
+
+## Installation
+
+For local development:
 
 ```bash
 uv sync
 ```
 
-This installs only the Python runtime dependencies from `pyproject.toml`:
-
-- `fastapi`
-- `pydantic`
-- `uvicorn`
-
-## Configure services
-
-Edit `config/services.toml`:
-
-```toml
-[services.serverA]
-iceoryx2_service = "jsonrpc/serverA"
-timeout_seconds = 5.0
-
-[services.serverB]
-iceoryx2_service = "jsonrpc/serverB"
-timeout_seconds = 5.0
-```
-
-The FastAPI gateway uses these names to route HTTP requests to iceoryx2 services.
-
-## Run the real demo
-
-Use three terminals.
-
-### Terminal 1: serverA
+Run the tests:
 
 ```bash
-uv run iox2-server-a
+uv run pytest
 ```
 
-Methods:
+## Controller Basics
 
-- `pipeline.start`
-- `pipeline.stop`
-- `pipeline.status`
-- `rpc.health`
+A controller must define `service_name` and `controller_name`. Public methods
+are exposed when they accept one Pydantic model argument named `params` and
+return a Pydantic model.
 
-### Terminal 2: serverB
+```python
+from dataclasses import dataclass
+
+from pydantic import Field
+
+from iox2_jsonrpc import EmptyParams, RpcModel, describe_controller
+
+
+class AddParams(RpcModel):
+    left: int = Field(ge=0)
+    right: int = Field(ge=0)
+
+
+class ValueResult(RpcModel):
+    value: int
+
+
+@dataclass
+class CalculatorController:
+    service_name: str = "mathService"
+    controller_name: str = "calculator"
+    calls: int = 0
+
+    def add(self, params: AddParams) -> ValueResult:
+        self.calls += 1
+        return ValueResult(value=params.left + params.right)
+
+    def calls_count(self, params: EmptyParams) -> ValueResult:
+        return ValueResult(value=self.calls)
+
+
+descriptor = describe_controller(CalculatorController())
+print(descriptor.model_dump_json(indent=2))
+```
+
+This exposes:
+
+- `calculator.add`
+- `calculator.calls_count`
+
+The default endpoint names are derived from the service and controller names:
+
+- RPC endpoint: `mathService/calculator/rpc`
+- Schema endpoint: `mathService/calculator/schema`
+
+## In-Process JSON-RPC
+
+Use `ControllerRpcEndpoint` to dispatch JSON-RPC requests directly without
+iceoryx2. This is useful for tests and local controller development.
+
+```python
+from iox2_jsonrpc import ControllerRpcEndpoint, JsonRpcRequest
+
+endpoint = ControllerRpcEndpoint(CalculatorController())
+
+response = endpoint.handle(
+    JsonRpcRequest(
+        id=1,
+        method="calculator.add",
+        params={"left": 2, "right": 5},
+    )
+)
+
+print(response.model_dump_json(indent=2))
+```
+
+For byte-oriented integrations:
+
+```python
+raw = b'{"jsonrpc":"2.0","id":1,"method":"calculator.calls_count"}'
+response_bytes = endpoint.handle_bytes(raw)
+```
+
+## iceoryx2 Transport
+
+Start a controller as an iceoryx2 JSON-RPC service:
+
+```python
+from iox2_jsonrpc.iceoryx import Iox2JsonRpcServer
+
+server = Iox2JsonRpcServer(CalculatorController())
+server.run_forever()
+```
+
+Discover available services and call a unique method:
+
+```python
+from iox2_jsonrpc.iceoryx import Iox2RpcRegistry
+
+registry = Iox2RpcRegistry.discover_all()
+registry.print_catalog()
+
+response = registry.call_unique(
+    "calculator.add",
+    {"left": 2, "right": 5},
+)
+print(response.model_dump_json(indent=2))
+```
+
+If multiple services expose the same JSON-RPC method, call by endpoint instead:
+
+```python
+response = registry.call_endpoint(
+    "mathService/calculator/rpc",
+    "calculator.add",
+    {"left": 2, "right": 5},
+)
+```
+
+## Example
+
+The repository includes an all-in-one camera example:
 
 ```bash
-uv run iox2-server-b
+uv run python examples/camera.py local
 ```
 
-Methods:
+To use the real iceoryx2 transport, run the server and client in separate
+terminals:
+
+```bash
+uv run python examples/camera.py server
+```
+
+```bash
+uv run python examples/camera.py client
+```
+
+The example controller exposes:
 
 - `camera.open`
 - `camera.close`
 - `camera.status`
 - `camera.capture`
-- `rpc.health`
 
-### Terminal 3: FastAPI gateway
-
-```bash
-uv run iox2-gateway --host 127.0.0.1 --port 8000
-```
-
-## Call serverA through FastAPI
-
-```bash
-curl -X POST http://127.0.0.1:8000/serverA/rpc \
-  -H "content-type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"pipeline.status","params":{}}'
-```
-
-```bash
-curl -X POST http://127.0.0.1:8000/serverA/rpc \
-  -H "content-type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"pipeline.start","params":{"profile":"demo"}}'
-```
-
-## Call serverB through FastAPI
-
-```bash
-curl -X POST http://127.0.0.1:8000/serverB/rpc \
-  -H "content-type: application/json" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"camera.capture","params":{"exposure_ms":25}}'
-```
-
-Alternative route style:
-
-```bash
-curl -X POST http://127.0.0.1:8000/rpc/serverB \
-  -H "content-type: application/json" \
-  -d '{"jsonrpc":"2.0","id":4,"method":"camera.status","params":{}}'
-```
-
-## Gateway metadata
-
-```bash
-curl http://127.0.0.1:8000/services
-curl http://127.0.0.1:8000/services/serverA/health
-```
-
-## Architecture
+## Package Map
 
 ```text
-HTTP client
-   |
-   v
-FastAPI gateway
-   |
-   | iceoryx2 request-response only
-   v
-serverA / serverB
-   |
-   v
-JSON-RPC method registry
+iox2_jsonrpc/models.py
+  JSON-RPC and service descriptor Pydantic models
+
+iox2_jsonrpc/controller.py
+  Controller validation, method introspection, and schema descriptors
+
+iox2_jsonrpc/endpoint.py
+  In-process JSON-RPC request dispatch
+
+iox2_jsonrpc/iceoryx.py
+  iceoryx2 server, discovery registry, and client calls
+
+examples/camera.py
+  Local and iceoryx2 camera controller example
+
+tests/test_controller_endpoint.py
+  Unit tests for descriptors and in-process dispatch
 ```
 
-## Code map
+## License
 
-```text
-src/iox2_jsonrpc/core.py
-  JSON-RPC parser, response builder, method registry, Pydantic validation
-
-src/iox2_jsonrpc/packet.py
-  JsonRpcPacket ctypes.Structure and encode/decode helpers
-
-src/iox2_jsonrpc/iox2_transport.py
-  Iceoryx2JsonRpcServer, Iceoryx2JsonRpcClient, client pool
-
-src/iox2_jsonrpc/gateway.py
-  FastAPI gateway routes
-
-src/iox2_jsonrpc/programs/server_a.py
-  pipeline microservice
-
-src/iox2_jsonrpc/programs/server_b.py
-  camera microservice
-
-src/iox2_jsonrpc/programs/gateway.py
-  central FastAPI gateway program
-```
-
-## Why the packet is fixed-size
-
-The JSON-RPC payload is encoded as UTF-8 JSON bytes inside a fixed-size `ctypes.Structure`:
-
-```python
-class JsonRpcPacket(ctypes.Structure):
-    _fields_ = [
-        ("correlation_id", ctypes.c_uint64),
-        ("payload_len", ctypes.c_uint32),
-        ("payload", ctypes.c_uint8 * 65536),
-    ]
-```
-
-That keeps the type shared-memory-friendly and avoids passing Python dict/list/string objects directly through iceoryx2.
-
-## Add a new service
-
-1. Add it to `config/services.toml`.
-2. Create a new `programs/server_x.py`.
-3. Register methods with `MethodRegistry`.
-4. Run that service in its own terminal.
-5. Call it through `POST /serviceName/rpc`.
+MIT
