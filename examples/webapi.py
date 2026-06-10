@@ -596,6 +596,7 @@ def create_dynamic_rpc_gateway_fastapi_router(
             "controllers": [item.model_dump(mode="json") for item in gateway.controllers()],
             "routes": [
                 "GET /health",
+                "GET /refresh",
                 "GET /controllers",
                 "GET /controllers/{controller}",
                 "GET /controllers/{controller}/methods",
@@ -708,7 +709,7 @@ def create_dynamic_rpc_gateway_fastapi_router(
     router.add_api_route(
         "/refresh",
         refresh_now,
-        methods=["POST"],
+        methods=["GET", "POST"],
         response_model=DynamicGatewayStatus,
         response_model_exclude_none=True,
         tags=route_tags,
@@ -717,7 +718,7 @@ def create_dynamic_rpc_gateway_fastapi_router(
     router.add_api_route(
         "/controllers/refresh",
         refresh_now,
-        methods=["POST"],
+        methods=["GET", "POST"],
         response_model=DynamicGatewayStatus,
         response_model_exclude_none=True,
         tags=route_tags,
@@ -838,7 +839,7 @@ def create_dynamic_rpc_gateway_fastapi_app(
     version: str = "1.0.0",
     description: str = "FastAPI gateway for RPC services discovered at runtime.",
     refresh_on_startup: bool = True,
-    refresh_interval_s: float | None = 1.0,
+    refresh_interval_s: float | None = None,
     install_dynamic_openapi: bool = True,
     tags: list[str] | None = None,
     default_timeout_s: float = 5.0,
@@ -906,7 +907,7 @@ def create_auto_discover_fastapi_app(
     title: str = "Auto-discovered JSON-RPC API",
     version: str = "1.0.0",
     description: str = "FastAPI gateway that automatically discovers RPC controllers at runtime.",
-    refresh_interval_s: float | None = 1.0,
+    refresh_interval_s: float | None = None,
     refresh_on_startup: bool = True,
     install_dynamic_openapi: bool = True,
     default_timeout_s: float = 5.0,
