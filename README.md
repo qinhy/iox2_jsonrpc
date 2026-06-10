@@ -3,6 +3,11 @@
 Typed JSON-RPC 2.0 helpers for Python controllers, with optional iceoryx2
 request-response transport.
 
+[![Tests](https://github.com/qinhy/iox2_jsonrpc/actions/workflows/tests.yml/badge.svg)](https://github.com/qinhy/iox2_jsonrpc/actions/workflows/tests.yml)
+
+Tested in GitHub Actions on Python 3.11, 3.12, and 3.13 across Ubuntu,
+Windows, and macOS.
+
 The core package lets you expose public methods on a controller as JSON-RPC
 methods when those methods use Pydantic models for both parameters and results.
 The iceoryx2 integration publishes the controller over IPC and exposes a schema
