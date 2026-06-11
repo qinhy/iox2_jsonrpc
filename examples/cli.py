@@ -2,19 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
 import logging
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, Field
-
-from iox2_jsonrpc import (
-    ControllerRpcEndpoint,
-    EmptyParams,
-    JsonRpcRequest,
-    RpcModel,
-    describe_controller,
-)
+from pydantic import BaseModel
 
 from webapi import create_auto_discover_fastapi_app
 
