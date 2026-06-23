@@ -80,7 +80,7 @@ class CameraRpcApi:
         return compact
 
 
-def run_client(*, output_dir: str | Path = ".") -> None:
+def run_client(*, output_dir: str | Path = ".", camera_params: dict[str, Any] | None = None) -> None:
     """Call status, open, capture twice, and close, like the original test client."""
 
     configure_file_logging()
@@ -88,7 +88,7 @@ def run_client(*, output_dir: str | Path = ".") -> None:
 
     api = CameraRpcApi.discover()
     api.call_and_print("status", output_dir=output_dir)
-    api.call_and_print("open", timeout_s=10.0, output_dir=output_dir)
+    api.call_and_print("open", params=camera_params, timeout_s=10.0, output_dir=output_dir)
     api.call_and_print("status", output_dir=output_dir)
     api.call_and_print(
         "capture",
@@ -105,7 +105,7 @@ def run_client(*, output_dir: str | Path = ".") -> None:
     logging.info("Program finished")
 
 
-def run_live_client() -> None:
+def run_live_client(camera_params: dict[str, Any] | None = None) -> None:
     """
     Open the camera and keep the server-side preview running until the user closes it.
 
@@ -117,7 +117,7 @@ def run_live_client() -> None:
     configure_file_logging()
 
     api = CameraRpcApi.discover()
-    api.call_and_print("open", timeout_s=10.0)
+    api.call_and_print("open", params=camera_params, timeout_s=10.0)
 
     print("\nLive camera preview is running.")
     print("Close options:")
@@ -149,12 +149,73 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable the server-side OpenCV preview window.",
     )
     parser.add_argument(
+        "--rgb-full-width",
+        type=int,
+        default=None,
+        help="Full RGB encoded width. Omit for true highest-resolution RGB; use 3840 for practical 4K mode.",
+    )
+    parser.add_argument(
+        "--rgb-full-height",
+        type=int,
+        default=None,
+        help="Full RGB encoded height. Omit for true highest-resolution RGB; use 2160 for practical 4K mode.",
+    )
+    parser.add_argument(
+        "--queue-max-size",
+        type=int,
+        default=None,
+        help="DepthAI host queue size for encoded packets; use 1 for lowest latency.",
+    )
+    parser.add_argument(
+        "--rgb-bitrate-kbps",
+        type=int,
+        default=None,
+        help="RGB H264 bitrate in kbps.",
+    )
+    parser.add_argument(
+        "--mono-bitrate-kbps",
+        type=int,
+        default=None,
+        help="Mono H264 bitrate in kbps.",
+    )
+    parser.add_argument(
+        "--rgb-pool",
+        type=int,
+        default=None,
+        help="RGB encoder frame pool size. 1 is safest for 12MP memory; 2 may improve throughput if memory allows.",
+    )
+    parser.add_argument(
+        "--no-encoded-drain",
+        action="store_true",
+        help="Disable preview thread full-res packet draining if another consumer drains encoded packets.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("."),
         help="Directory where client capture images are saved.",
     )
     return parser
+
+
+def _camera_params_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "debug_preview": not bool(args.no_preview),
+    }
+    mapping = {
+        "rgb_full_width": args.rgb_full_width,
+        "rgb_full_height": args.rgb_full_height,
+        "queue_max_size": args.queue_max_size,
+        "rgb_bitrate_kbps": args.rgb_bitrate_kbps,
+        "mono_bitrate_kbps": args.mono_bitrate_kbps,
+        "rgb_encoder_pool_frames": args.rgb_pool,
+    }
+    for key, value in mapping.items():
+        if value is not None:
+            params[key] = value
+    if args.no_encoded_drain:
+        params["debug_preview_drain_encoded"] = False
+    return params
 
 
 def main() -> None:
@@ -164,9 +225,9 @@ def main() -> None:
     if mode in {"server", "serve"}:
         run_server()
     elif mode == "client":
-        run_client(output_dir=args.output_dir)
+        run_client(output_dir=args.output_dir, camera_params=_camera_params_from_args(args))
     elif mode in {"live", "preview", "stream"}:
-        run_live_client()
+        run_live_client(camera_params=_camera_params_from_args(args))
     else:
         raise SystemExit(f"Unknown mode: {mode}")
 

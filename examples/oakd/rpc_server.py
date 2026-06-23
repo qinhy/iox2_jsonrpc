@@ -35,12 +35,36 @@ class CameraConfig(CameraBaseModel):
     height: int = 480
     fps: int = 15
 
+    # OpenCV preview only. read_frame() returns a small preview mosaic, not the
+    # full-resolution encoded streams.
     debug_preview: bool = True
     debug_window_name: str = "serverCam live preview"
+    debug_preview_timeout_s: float = 0.01
+    debug_preview_drain_encoded: bool = True
+    debug_preview_show_encoded_fps: bool = True
+    debug_preview_max_encoded_packets: int = 256
+    encoded_drain_sleep_s: float = 0.001
 
-    queue_max_size: int = 4
-    frame_poll_sleep_s: float = 0.005
+    # Keep queues small for low latency. The full-resolution H264 packets must be
+    # drained continuously by Cv2Preview's encoded-drain thread or by your own
+    # recorder/sender thread.
+    queue_max_size: int = 1
+    frame_poll_sleep_s: float = 0.001
     close_join_timeout_s: float = 2.0
+
+    # Full-resolution encoded path. Leave rgb_full_width/height as None for true
+    # highest-resolution RGB, or set 3840x2160 for a practical 15 FPS mode.
+    rgb_bitrate_kbps: int = 40000
+    mono_bitrate_kbps: int = 4000
+    rgb_encoder_pool_frames: int = 1
+    mono_encoder_pool_frames: int = 1
+    rgb_full_width: int | None = None
+    rgb_full_height: int | None = None
+
+    # Preview path dimensions. These do not affect the full H264 streams.
+    preview_width: int = 640
+    preview_height: int = 480
+    preview_stereo_height: int | None = 160
 
 
 class CaptureParams(CameraBaseModel):
@@ -81,7 +105,7 @@ class CameraController:
     service_name: str = "serverCam"
     controller_name: str = "camera"
 
-    config: CameraConfig = None
+    config: CameraConfig = field(default_factory=CameraConfig)
     opened: bool = False
     captures: int = 0
 
