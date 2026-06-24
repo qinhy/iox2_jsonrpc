@@ -374,7 +374,7 @@ class CameraController:
         )
 
 
-def run_server() -> None:
+def run_server(controller_name="camera") -> None:
     """Run the camera controller as an iceoryx2 JSON-RPC service.
 
     ``config`` is only the initial/default config. The actual DepthAI camera
@@ -383,5 +383,5 @@ def run_server() -> None:
 
     from iox2_jsonrpc.iceoryx import Iox2JsonRpcServer
 
-    server = Iox2JsonRpcServer(CameraController())
+    server = Iox2JsonRpcServer(CameraController(controller_name=controller_name))
     server.run_forever()

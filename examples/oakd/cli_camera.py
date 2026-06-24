@@ -144,6 +144,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the RPC server, demo client, or live-preview client.",
     )
     parser.add_argument(
+        "--server-name",
+        default="camera",
+    )
+    parser.add_argument(
         "--no-preview",
         action="store_true",
         help="Disable the server-side OpenCV preview window.",
@@ -223,7 +227,7 @@ def main() -> None:
     mode = args.mode.lower()
 
     if mode in {"server", "serve"}:
-        run_server()
+        run_server(controller_name=args.server_name)
     elif mode == "client":
         run_client(output_dir=args.output_dir, camera_params=_camera_params_from_args(args))
     elif mode in {"live", "preview", "stream"}:

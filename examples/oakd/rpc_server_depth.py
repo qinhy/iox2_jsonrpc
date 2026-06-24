@@ -274,11 +274,6 @@ class DepthController:
         )
 
 
-def run_server() -> None:
+def run_server(controller_name="depth") -> None:
     from iox2_jsonrpc.iceoryx import Iox2JsonRpcServer
-
-    Iox2JsonRpcServer(DepthController()).run_forever()
-
-
-if __name__ == "__main__":
-    run_server()
+    Iox2JsonRpcServer(DepthController(controller_name=controller_name)).run_forever()

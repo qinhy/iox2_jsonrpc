@@ -284,6 +284,7 @@ def build_parser() -> argparse.ArgumentParser:
         ],
         help="Run the RPC server, inspect/set calibration/backend, or convert image paths to PCD.",
     )
+    parser.add_argument("--server-name", default="depth")
 
     parser.add_argument("--left", "--left-path", dest="left_path", default=None, help="Left mono image path.")
     parser.add_argument("--right", "--right-path", dest="right_path", default=None, help="Right mono image path.")
@@ -378,7 +379,7 @@ def main() -> None:
     if mode in {"server", "serve"}:
         from rpc_server_depth import run_server
 
-        run_server()
+        run_server(controller_name=args.server_name)
     elif mode in {"info", "camera-info"}:
         run_camera_info_client(timeout_s=args.timeout_s)
     elif mode == "set-info":
