@@ -6,6 +6,20 @@ from typing import Literal
 
 from pydantic import Field
 
+Resolution = tuple[int, int]
+Matrix3x3 = tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]
+Matrix4x4 = tuple[
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+]
+DistortionCoeffs = tuple[float, ...]
+
 from iox2_jsonrpc import EmptyParams, RpcModel
 
 import os
@@ -73,6 +87,116 @@ class CaptureParams(CameraBaseModel):
     jpeg_quality: int = Field(default=85, ge=1, le=100)
 
 
+class CameraCalibrationParams(CameraBaseModel):
+    rgb_resolution: Resolution = Field(default=(4056, 3040))
+    left_resolution: Resolution = Field(default=(1280, 800))
+    right_resolution: Resolution = Field(default=(1280, 800))
+
+    stereo_translation_units_hint: str = Field(
+        default="Calibration extrinsics units from device; Luxonis stereo baseline override API uses centimeters."
+    )
+
+    rgb_intrinsics: Matrix3x3 = Field(
+        default=(
+            (2430.31884765625, 0.0, 2063.196044921875),
+            (0.0, 2429.41748046875, 1490.1956787109375),
+            (0.0, 0.0, 1.0),
+        )
+    )
+
+    left_intrinsics: Matrix3x3 = Field(
+        default=(
+            (570.8507690429688, 0.0, 653.754150390625),
+            (0.0, 570.580810546875, 390.99169921875),
+            (0.0, 0.0, 1.0),
+        )
+    )
+
+    right_intrinsics: Matrix3x3 = Field(
+        default=(
+            (567.8758544921875, 0.0, 655.560546875),
+            (0.0, 567.7424926757812, 393.97039794921875),
+            (0.0, 0.0, 1.0),
+        )
+    )
+
+    left_to_right_extrinsics: Matrix4x4 = Field(
+        default=(
+            (0.9998766183853149, 0.0023975009098649025, -0.015519456937909126, -7.537897109985352),
+            (-0.0024368134327232838, 0.9999938607215881, -0.002514647087082267, 0.09707357734441757),
+            (0.01551333349198103, 0.0025521547067910433, 0.9998764395713806, -0.08006280660629272),
+            (0.0, 0.0, 0.0, 1.0),
+        )
+    )
+
+    left_to_rgb_extrinsics: Matrix4x4 = Field(
+        default=(
+            (0.999745786190033, -0.010174884460866451, -0.020119857043027878, -3.7557337284088135),
+            (0.010090984404087067, 0.9999399781227112, -0.004267154261469841, -0.004705727566033602),
+            (0.02016206830739975, 0.004063040018081665, 0.9997884631156921, -0.04603101313114166),
+            (0.0, 0.0, 0.0, 1.0),
+        )
+    )
+
+    rgb_distortion: DistortionCoeffs = Field(
+        default=(
+            11.808209419250488,
+            11.02328872680664,
+            0.0005683265044353902,
+            -0.0014364976668730378,
+            -1.831695795059204,
+            11.769153594970703,
+            14.672675132751465,
+            -1.088363766670227,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.00932407472282648,
+            -0.015433108434081078,
+        )
+    )
+
+    left_distortion: DistortionCoeffs = Field(
+        default=(
+            5.454817771911621,
+            1.694711446762085,
+            8.319105836562812e-05,
+            -5.4938958783168346e-05,
+            0.029059873893857002,
+            5.82321310043335,
+            3.369436502456665,
+            0.23804199695587158,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.004699581768363714,
+            -0.0014164879685267806,
+        )
+    )
+
+    right_distortion: DistortionCoeffs = Field(
+        default=(
+            5.091114521026611,
+            1.5919005870819092,
+            -7.720104804320727e-06,
+            2.0027317077619955e-05,
+            0.029687780886888504,
+            5.4577412605285645,
+            3.150493621826172,
+            0.22900323569774628,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.0026084419805556536,
+            -0.002354657743126154,
+        )
+    )
+
+    stereo_baseline_cm: float = Field(default=7.537897109985352)
+
 class CameraStatusResult(CameraBaseModel):
     opened: bool
     captures: int
@@ -80,7 +204,7 @@ class CameraStatusResult(CameraBaseModel):
     width: int
     height: int
     preview_running: bool = False
-
+    camera_calib: CameraCalibrationParams | None = None
 
 class CaptureResult(CameraStatusResult):
     frame_id: int
@@ -113,23 +237,20 @@ class CameraController:
     _camera: DepthAICamera | None = field(default=None, init=False, repr=False)
     _preview: Cv2Preview | None = field(default=None, init=False, repr=False)
 
-    def _build_session(self) -> None:
-        """Create camera/preview objects lazily for the current config."""
-
-        self._camera = DepthAICamera(self.config)
-        self._preview = Cv2Preview(
-            self.config,
-            self._camera,
-            on_close_requested=lambda: self._close_depthai(join_preview_thread=False),
-            overlay_provider=self._preview_overlay_lines,
-        )
-
     def _ensure_session(self) -> tuple[DepthAICamera, Cv2Preview]:
         if self._camera is None or self._preview is None:
-            self._build_session()
+            """Create camera/preview objects lazily for the current config."""
+
+            self._camera = DepthAICamera(self.config)
+            self._preview = Cv2Preview(
+                self.config,
+                on_close_requested=lambda: self._close_depthai(join_preview_thread=False),
+                overlay_provider=self._preview_overlay_lines,
+            )
 
         assert self._camera is not None
         assert self._preview is not None
+        
         return self._camera, self._preview
 
     def _replace_config(self, config: CameraConfig) -> None:
@@ -153,36 +274,6 @@ class CameraController:
             f"FPS: {self.config.fps}",
             f"Captures: {self.captures}",
         ]
-
-    def _open_depthai(self, config: CameraConfig | None = None) -> None:
-        if config is not None and config != self.config and self.opened:
-            # Re-opening with a different runtime config means the current
-            # hardware session must be closed before a new DepthAICamera is built.
-            self._close_depthai(join_preview_thread=True)
-
-        with self._state_lock:
-            if config is not None and config != self.config:
-                if self._preview is not None:
-                    self._preview.destroy_window()
-                if self._camera is not None:
-                    self._camera.close()
-                self.opened = False
-                self._replace_config(config)
-
-            camera, preview = self._ensure_session()
-            preview.stop_event.clear()
-
-            if self.opened:
-                preview.start()
-                return
-
-            camera.open()
-            self.opened = True
-            preview.start()
-
-            # If preview is disabled, pull one frame so width/height are updated.
-            if not self.config.debug_preview:
-                camera.read_frame(timeout_s=2.0, stop_event=preview.stop_event)
 
     def _close_depthai(self, *, join_preview_thread: bool = True) -> None:
         # Do not hold _state_lock while joining the preview thread. The preview
@@ -212,7 +303,36 @@ class CameraController:
         )
 
     def open(self, params: CameraConfig) -> CameraStatusResult:
-        self._open_depthai(params)
+        config = params
+        if config is not None and config != self.config and self.opened:
+            # Re-opening with a different runtime config means the current
+            # hardware session must be closed before a new DepthAICamera is built.
+            self._close_depthai(join_preview_thread=True)
+
+        with self._state_lock:
+            if config is not None and config != self.config:
+                if self._preview is not None:
+                    self._preview.destroy_window()
+                if self._camera is not None:
+                    self._camera.close()
+                self.opened = False
+                self._replace_config(config)
+
+            camera, preview = self._ensure_session()
+            preview.stop_event.clear()
+
+            if self.opened:
+                preview.start(camera)
+                return
+
+            camera.open()
+            self.opened = True
+            preview.start(camera)
+
+            # If preview is disabled, pull one frame so width/height are updated.
+            if not self.config.debug_preview:
+                camera.read_frame(timeout_s=2.0, stop_event=preview.stop_event)
+
         return self._status()
 
     def close(self, params: EmptyParams) -> CameraStatusResult:

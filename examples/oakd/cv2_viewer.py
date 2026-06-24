@@ -36,7 +36,7 @@ class Cv2Preview:
     """
 
     config: Any
-    camera: DepthAICamera
+    camera: DepthAICamera = None
     on_close_requested: CloseCallback | None = None
     overlay_provider: OverlayProvider | None = None
     encoded_packet_consumer: EncodedPacketConsumer | None = None
@@ -70,9 +70,11 @@ class Cv2Preview:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self) -> None:
-        from rpc_server import CameraConfig
+    def start(self, camera: DepthAICamera) -> None:
+        from rpc_server_camera import CameraConfig
         self.config: CameraConfig = self.config
+        self.camera = camera
+
         if not self.config.debug_preview:
             return
 
