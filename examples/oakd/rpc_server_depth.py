@@ -10,9 +10,14 @@ from pydantic import BaseModel, Field
 from iox2_jsonrpc import EmptyParams, RpcModel
 
 _THIS_DIR = Path(__file__).absolute().parent
-for p in (_THIS_DIR, _THIS_DIR.parent, Path(os.path.dirname(os.path.dirname(_THIS_DIR.parent)))):
-    if (s := str(p)) not in sys.path:
-        sys.path.append(s)
+for path in (
+    _THIS_DIR,
+    _THIS_DIR.parent,
+    Path(os.path.dirname(os.path.dirname(_THIS_DIR.parent))),
+):
+    path_text = str(path)
+    if path_text not in sys.path:
+        sys.path.append(path_text)
 
 from pcd_utils import DEFAULT_CALIBRATION, StereoRgbCalibration, read_image, stereo_rgb_to_colored_point_cloud  # noqa: E402
 from pcd_dnn_utils import FastFoundationStereoDisparity, stereo_rgb_to_colored_point_cloud_dnn  # noqa: E402
@@ -24,76 +29,90 @@ OutputFrame = Literal["left", "left_rectified"]
 TranslationUnit = Literal["m", "cm", "mm"]
 Matrix3x3 = tuple[tuple[float, float, float], ...]
 Matrix4x4 = tuple[tuple[float, float, float, float], ...]
-DistortionCoeffs = tuple[float, ...]
+DistortionCoefficients = tuple[float, ...]
 
-C = DEFAULT_CALIBRATION
-
-def _res(v: Any) -> Resolution:
-    return int(v[0]), int(v[1])
+_DEFAULT_CALIBRATION = DEFAULT_CALIBRATION
+_DNN_CACHE_KEY_FIELDS = ("repo_dir", "model_path", "model_dir", "device", "valid_iters", "max_disp", "hiera")
 
 
-def _mat(v: Any) -> tuple[tuple[float, ...], ...]:
-    return tuple(tuple(float(x) for x in row) for row in v)
+def _as_resolution(value: Any) -> Resolution:
+    return int(value[0]), int(value[1])
 
 
-def _floats(v: Any) -> DistortionCoeffs:
-    return tuple(float(x) for x in v)
+def _as_matrix(value: Any) -> tuple[tuple[float, ...], ...]:
+    return tuple(tuple(float(item) for item in row) for row in value)
 
 
-def _field(key: str, fn: Any = _mat) -> Any:
-    return Field(default=fn(C[key]))
+def _as_float_tuple(value: Any) -> DistortionCoefficients:
+    return tuple(float(item) for item in value)
 
 
-def _dump(v: Any) -> dict[str, Any]:
-    if v is None:
+def _default_calibration_field(key: str, converter: Any = _as_matrix) -> Any:
+    return Field(default=converter(_DEFAULT_CALIBRATION[key]))
+
+
+def _model_to_dict(value: Any) -> dict[str, Any]:
+    if value is None:
         return {}
-    if isinstance(v, dict):
-        return dict(v)
-    for name in ("model_dump", "dict"):
-        if hasattr(v, name):
-            return getattr(v, name)()
-    raise TypeError(f"Expected a dict/RpcModel-compatible object, got {type(v)!r}")
+    if isinstance(value, dict):
+        return dict(value)
+
+    for method_name in ("model_dump", "dict"):
+        if hasattr(value, method_name):
+            return getattr(value, method_name)()
+
+    raise TypeError(f"Expected a dict/RpcModel-compatible object, got {type(value)!r}")
 
 
-def _depth_stats(points_m: np.ndarray) -> tuple[float | None, float | None, float | None]:
+def _model_field_names(model_type: type[BaseModel]) -> tuple[str, ...]:
+    fields = getattr(model_type, "model_fields", None) or getattr(model_type, "__fields__", {})
+    return tuple(fields.keys())
+
+
+def _depth_statistics(points_m: np.ndarray) -> tuple[float | None, float | None, float | None]:
     if not points_m.size:
         return None, None, None
-    z = np.asarray(points_m, dtype=np.float64)[:, 2]
-    z = z[np.isfinite(z)]
-    return (None, None, None) if not z.size else tuple(float(x) for x in (z.min(), z.max(), z.mean()))
+
+    depth_values = np.asarray(points_m, dtype=np.float64)[:, 2]
+    depth_values = depth_values[np.isfinite(depth_values)]
+    if not depth_values.size:
+        return None, None, None
+
+    return tuple(float(value) for value in (depth_values.min(), depth_values.max(), depth_values.mean()))
+
 
 def _read_image_or_npy(path: str | Path, *, color: bool) -> np.ndarray:
-    p = Path(path)
+    image_path = Path(path).expanduser()
 
-    if p.suffix.lower() == ".npy":
-        arr = np.load(p, allow_pickle=False)
+    if image_path.suffix.lower() == ".npy":
+        array = np.load(image_path, allow_pickle=False)
 
         if color:
-            if arr.ndim != 3 or arr.shape[2] < 3:
+            if array.ndim != 3 or array.shape[2] < 3:
                 raise ValueError(
                     f"Expected color .npy image with shape HxWx3 or HxWx4, "
-                    f"got {arr.shape} from {p}"
+                    f"got {array.shape} from {image_path}"
                 )
-            arr = arr[:, :, :3]
+            array = array[:, :, :3]
         else:
-            if arr.ndim == 2:
+            if array.ndim == 2:
                 pass
-            elif arr.ndim == 3 and arr.shape[2] == 1:
-                arr = arr[:, :, 0]
+            elif array.ndim == 3 and array.shape[2] == 1:
+                array = array[:, :, 0]
             else:
                 raise ValueError(
                     f"Expected grayscale .npy image with shape HxW or HxWx1, "
-                    f"got {arr.shape} from {p}"
+                    f"got {array.shape} from {image_path}"
                 )
 
-        return np.ascontiguousarray(arr)
+        return np.ascontiguousarray(array)
 
-    return read_image(p, color=color)
+    return read_image(image_path, color=color)
 
 
 def _save_cloud_npz(path: str | Path, cloud: Any) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = Path(path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     arrays: dict[str, np.ndarray] = {
         "points_m": np.asarray(cloud.points_m),
@@ -103,32 +122,30 @@ def _save_cloud_npz(path: str | Path, cloud: Any) -> Path:
     if cloud.disparity is not None:
         arrays["disparity"] = np.asarray(cloud.disparity)
 
-    # Important: uncompressed .npz. Much faster than np.savez_compressed().
-    np.savez(path, **arrays)
-
-    return path
+    np.savez(output_path, **arrays)
+    return output_path
 
 
 class DepthBaseModel(RpcModel):
     service: Literal["serverDepth"] = "serverDepth"
 
 
-class CameraInfoParams(DepthBaseModel):
+class DepthCalibrationParams(DepthBaseModel):
     source_translation_unit: TranslationUnit = "cm"
-    rgb_resolution: Resolution = _field("rgb_resolution", _res)
-    left_resolution: Resolution = _field("left_resolution", _res)
-    right_resolution: Resolution = _field("right_resolution", _res)
-    rgb_intrinsics: Matrix3x3 = _field("rgb_intrinsics")
-    left_intrinsics: Matrix3x3 = _field("left_intrinsics")
-    right_intrinsics: Matrix3x3 = _field("right_intrinsics")
-    left_to_right_extrinsics: Matrix4x4 = _field("left_to_right_extrinsics")
-    left_to_rgb_extrinsics: Matrix4x4 = _field("left_to_rgb_extrinsics")
-    rgb_distortion: DistortionCoeffs = _field("rgb_distortion", _floats)
-    left_distortion: DistortionCoeffs = _field("left_distortion", _floats)
-    right_distortion: DistortionCoeffs = _field("right_distortion", _floats)
+    rgb_resolution: Resolution = _default_calibration_field("rgb_resolution", _as_resolution)
+    left_resolution: Resolution = _default_calibration_field("left_resolution", _as_resolution)
+    right_resolution: Resolution = _default_calibration_field("right_resolution", _as_resolution)
+    rgb_intrinsics: Matrix3x3 = _default_calibration_field("rgb_intrinsics")
+    left_intrinsics: Matrix3x3 = _default_calibration_field("left_intrinsics")
+    right_intrinsics: Matrix3x3 = _default_calibration_field("right_intrinsics")
+    left_to_right_extrinsics: Matrix4x4 = _default_calibration_field("left_to_right_extrinsics")
+    left_to_rgb_extrinsics: Matrix4x4 = _default_calibration_field("left_to_rgb_extrinsics")
+    rgb_distortion: DistortionCoefficients = _default_calibration_field("rgb_distortion", _as_float_tuple)
+    left_distortion: DistortionCoefficients = _default_calibration_field("left_distortion", _as_float_tuple)
+    right_distortion: DistortionCoefficients = _default_calibration_field("right_distortion", _as_float_tuple)
 
 
-class SetCameraInfoResult(DepthBaseModel):
+class SetDepthCalibrationResult(DepthBaseModel):
     configured: bool
     source_translation_unit: TranslationUnit
     rgb_resolution: Resolution
@@ -151,7 +168,9 @@ class BackendOverrides(BaseModel):
     stereo_input_color_order: ColorOrder | None = None
     remove_invisible: bool | None = None
 
-BACKEND_KEYS = BackendOverrides.model_fields.keys()
+
+BACKEND_KEYS = _model_field_names(BackendOverrides)
+
 
 class BackendParams(BackendOverrides):
     backend: DepthBackend = "sgbm"
@@ -170,9 +189,11 @@ class BackendStatusResult(BackendParams):
 
 
 class ToPcdParams(BackendOverrides):
-    left_path: str; right_path: str; rgb_path: str
+    left_path: str
+    right_path: str
+    rgb_path: str
     output_path: str = "colored_cloud.pcd"
-    camera_calib: CameraInfoParams | None = None
+    calibration: DepthCalibrationParams | None = None
     input_color_order: ColorOrder = "BGR"
     rgb_image_is_undistorted: bool = False
     alpha: float = 0.0
@@ -202,37 +223,48 @@ class ToPcdResult(DepthBaseModel):
 class DepthController:
     service_name: str = "serverDepth"
     controller_name: str = "depth"
-    camera_info_params: CameraInfoParams = field(default_factory=CameraInfoParams)
+    calibration_params: DepthCalibrationParams = field(default_factory=DepthCalibrationParams)
     backend_params: BackendParams = field(default_factory=BackendParams)
     _dnn_predictor: FastFoundationStereoDisparity | None = field(default=None, init=False, repr=False)
     _dnn_predictor_key: tuple[Any, ...] | None = field(default=None, init=False, repr=False)
 
-    def _calibration(self, camera_info: CameraInfoParams | None = None) -> StereoRgbCalibration:
-        data = _dump(camera_info or self.camera_info_params)
-        data.pop("service", None)
-        return StereoRgbCalibration.from_dict(data, source_translation_unit=data.pop("source_translation_unit", "cm"))
+    def _build_calibration(self, params: DepthCalibrationParams | None = None) -> StereoRgbCalibration:
+        calibration_data = _model_to_dict(params or self.calibration_params)
+        calibration_data.pop("service", None)
+        translation_unit = calibration_data.pop("source_translation_unit", "cm")
+        return StereoRgbCalibration.from_dict(calibration_data, source_translation_unit=translation_unit)
 
-    def _camera_info_result(self, calib: StereoRgbCalibration) -> SetCameraInfoResult:
-        keys = ("source_translation_unit", "rgb_resolution",
-                "left_resolution", "right_resolution", "stereo_baseline_m", "stereo_baseline_cm")
-        return SetCameraInfoResult(configured=True, **{k: getattr(calib, k) for k in keys})
+    def _calibration_result(self, calibration: StereoRgbCalibration) -> SetDepthCalibrationResult:
+        result_fields = (
+            "source_translation_unit",
+            "rgb_resolution",
+            "left_resolution",
+            "right_resolution",
+            "stereo_baseline_m",
+            "stereo_baseline_cm",
+        )
+        return SetDepthCalibrationResult(
+            configured=True,
+            **{field_name: getattr(calibration, field_name) for field_name in result_fields},
+        )
 
     def _backend_result(self) -> BackendStatusResult:
         return BackendStatusResult(
             configured=True,
             predictor_loaded=self._dnn_predictor is not None,
-            **{k: getattr(self.backend_params, k) for k in BACKEND_KEYS},
+            **{key: getattr(self.backend_params, key) for key in BACKEND_KEYS},
         )
 
-    def _dnn_key(self, backend: BackendParams) -> tuple[Any, ...]:        
-        DNN_KEY_FIELDS = ("repo_dir", "model_path", "model_dir", "device", "valid_iters", "max_disp", "hiera")
-        vals = [getattr(backend, k) for k in DNN_KEY_FIELDS]
-        vals[4], vals[5], vals[6] = int(vals[4]), int(vals[5]), bool(vals[6])
-        return tuple(vals)
+    def _dnn_cache_key(self, backend: BackendParams) -> tuple[Any, ...]:
+        values = [getattr(backend, key) for key in _DNN_CACHE_KEY_FIELDS]
+        values[4] = int(values[4])
+        values[5] = int(values[5])
+        values[6] = bool(values[6])
+        return tuple(values)
 
     def _get_dnn_predictor(self, backend: BackendParams) -> FastFoundationStereoDisparity:
-        key = self._dnn_key(backend)
-        if self._dnn_predictor is None or self._dnn_predictor_key != key:
+        cache_key = self._dnn_cache_key(backend)
+        if self._dnn_predictor is None or self._dnn_predictor_key != cache_key:
             self._dnn_predictor = FastFoundationStereoDisparity(
                 repo_dir=backend.repo_dir,
                 model_path=backend.model_path,
@@ -242,28 +274,30 @@ class DepthController:
                 max_disp=int(backend.max_disp),
                 hiera=bool(backend.hiera),
             )
-            self._dnn_predictor_key = key
+            self._dnn_predictor_key = cache_key
+
         return self._dnn_predictor
 
     def _effective_backend(self, params: ToPcdParams) -> BackendParams:
-        data = {k: getattr(self.backend_params, k) for k in BACKEND_KEYS}
-        overrides = _dump(params)
-        data.update({k: overrides[k] for k in BACKEND_KEYS if overrides.get(k) is not None})
-        return BackendParams(**data)
+        backend_data = {key: getattr(self.backend_params, key) for key in BACKEND_KEYS}
+        override_data = _model_to_dict(params)
+        backend_data.update({key: override_data[key] for key in BACKEND_KEYS if override_data.get(key) is not None})
+        return BackendParams(**backend_data)
 
-    def set_camera_info(self, params: CameraInfoParams) -> SetCameraInfoResult:
-        self.camera_info_params = params
-        return self._camera_info_result(self._calibration(params))
+    def set_calibration(self, params: DepthCalibrationParams) -> SetDepthCalibrationResult:
+        self.calibration_params = params
+        return self._calibration_result(self._build_calibration(params))
 
-    def camera_info(self, params: EmptyParams) -> SetCameraInfoResult:
+    def calibration(self, params: EmptyParams) -> SetDepthCalibrationResult:
         del params
-        return self._camera_info_result(self._calibration())
+        return self._calibration_result(self._build_calibration())
 
     def set_backend(self, params: BackendParams) -> BackendStatusResult:
-        old_key = self._dnn_key(self.backend_params)
+        old_cache_key = self._dnn_cache_key(self.backend_params)
         self.backend_params = params
-        if old_key != self._dnn_key(params):
-            self._dnn_predictor = self._dnn_predictor_key = None
+        if old_cache_key != self._dnn_cache_key(params):
+            self._dnn_predictor = None
+            self._dnn_predictor_key = None
         return self._backend_result()
 
     def backend(self, params: EmptyParams) -> BackendStatusResult:
@@ -271,23 +305,19 @@ class DepthController:
         return self._backend_result()
 
     def to_pcd(self, params: ToPcdParams) -> ToPcdResult:
-        output_path = Path(params.output_path)
+        output_path = Path(params.output_path).expanduser()
         output_suffix = output_path.suffix.lower()
 
         if output_suffix not in {".pcd", ".npz"}:
             raise ValueError(f"output_path must end with .pcd or .npz, got: {output_path}")
 
         backend = self._effective_backend(params)
-        common = dict(
+        conversion_args = dict(
             left_image=_read_image_or_npy(params.left_path, color=False),
             right_image=_read_image_or_npy(params.right_path, color=False),
             rgb_image=_read_image_or_npy(params.rgb_path, color=True),
-            calibration=self._calibration(params.camera_calib),
-
-            # For .pcd, let the existing utility save the file.
-            # For .npz, do not ask pcd_utils to save, because it only supports point-cloud formats.
+            calibration=self._build_calibration(params.calibration),
             output_path=output_path if output_suffix == ".pcd" else None,
-
             min_disparity=float(params.min_disparity),
             max_depth_m=params.max_depth_m,
             stride=params.stride,
@@ -297,11 +327,16 @@ class DepthController:
             alpha=params.alpha,
             rgb_image_is_undistorted=params.rgb_image_is_undistorted,
         )
+
         if backend.backend == "sgbm":
-            cloud = stereo_rgb_to_colored_point_cloud(**common,
-                num_disparities=params.num_disparities, block_size=params.block_size)
+            cloud = stereo_rgb_to_colored_point_cloud(
+                **conversion_args,
+                num_disparities=params.num_disparities,
+                block_size=params.block_size,
+            )
         elif backend.backend == "dnn":
-            cloud = stereo_rgb_to_colored_point_cloud_dnn(**common,
+            cloud = stereo_rgb_to_colored_point_cloud_dnn(
+                **conversion_args,
                 disparity_predictor=self._get_dnn_predictor(backend),
                 model_scale=float(backend.model_scale),
                 stereo_input_color_order=backend.stereo_input_color_order,
@@ -313,8 +348,9 @@ class DepthController:
         if output_suffix == ".npz":
             _save_cloud_npz(output_path, cloud)
 
-        depth_min_m, depth_max_m, depth_mean_m = _depth_stats(cloud.points_m)
-        h, w = (None, None) if cloud.disparity is None else cloud.disparity.shape[:2]
+        depth_min_m, depth_max_m, depth_mean_m = _depth_statistics(cloud.points_m)
+        disparity_height, disparity_width = (None, None) if cloud.disparity is None else cloud.disparity.shape[:2]
+
         return ToPcdResult(
             backend=backend.backend,
             output_path=str(output_path),
@@ -324,11 +360,12 @@ class DepthController:
             depth_min_m=depth_min_m,
             depth_max_m=depth_max_m,
             depth_mean_m=depth_mean_m,
-            disparity_width=w,
-            disparity_height=h,
+            disparity_width=disparity_width,
+            disparity_height=disparity_height,
         )
 
 
-def run_server(controller_name="depth") -> None:
+def run_server(controller_name: str = "depth") -> None:
     from iox2_jsonrpc.iceoryx import Iox2JsonRpcServer
+
     Iox2JsonRpcServer(DepthController(controller_name=controller_name)).run_forever()

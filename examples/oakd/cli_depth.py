@@ -8,22 +8,20 @@ import sys
 from pathlib import Path
 from typing import Any, Literal
 
-# Match the local import style used by cli_camera.py, but keep this CLI usable
-# when it is placed next to rpc_server_depth.py.
 _THIS_DIR = Path(__file__).absolute().parent
-for _path in (
+for path in (
     _THIS_DIR,
     _THIS_DIR.parent,
     Path(os.path.dirname(os.path.dirname(_THIS_DIR.parent))),
 ):
-    _path_s = str(_path)
-    if _path_s not in sys.path:
-        sys.path.append(_path_s)
-
+    path_text = str(path)
+    if path_text not in sys.path:
+        sys.path.append(path_text)
 
 try:  # noqa: E402
     from utils import configure_file_logging, print_json_result
 except Exception:  # pragma: no cover - fallback for standalone use
+
     def configure_file_logging(*args: Any, **kwargs: Any) -> None:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -34,7 +32,7 @@ except Exception:  # pragma: no cover - fallback for standalone use
 
 TranslationUnit = Literal["m", "cm", "mm"]
 
-_CAMERA_INFO_KEYS = {
+_CALIBRATION_KEYS = {
     "service",
     "source_translation_unit",
     "rgb_resolution",
@@ -52,7 +50,7 @@ _CAMERA_INFO_KEYS = {
 
 
 class DepthRpcApi:
-    """Thin JSON-RPC client wrapper for the minimal depth converter methods."""
+    """Small JSON-RPC client wrapper for depth conversion service methods."""
 
     def __init__(self, registry: Any, *, controller_name: str = "depth") -> None:
         from iox2_jsonrpc.iceoryx import Iox2RpcRegistry
@@ -92,11 +90,11 @@ class DepthRpcApi:
         print_json_result(self.method(name), result)
         return result
 
-    def camera_info(self, *, timeout_s: float = 5.0) -> Any:
-        return self.call("camera_info", timeout_s=timeout_s)
+    def calibration(self, *, timeout_s: float = 5.0) -> Any:
+        return self.call("calibration", timeout_s=timeout_s)
 
-    def set_camera_info(self, params: dict[str, Any], *, timeout_s: float = 5.0) -> Any:
-        return self.call("set_camera_info", params=params, timeout_s=timeout_s)
+    def set_calibration(self, params: dict[str, Any], *, timeout_s: float = 5.0) -> Any:
+        return self.call("set_calibration", params=params, timeout_s=timeout_s)
 
     def backend(self, *, timeout_s: float = 5.0) -> Any:
         return self.call("backend", timeout_s=timeout_s)
@@ -109,33 +107,36 @@ class DepthRpcApi:
 
 
 def _read_json(path: str | Path) -> dict[str, Any]:
-    with Path(path).expanduser().open("r", encoding="utf-8") as f:
-        data = json.load(f)
+    input_path = Path(path).expanduser()
+    with input_path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+
     if not isinstance(data, dict):
-        raise ValueError(f"Expected JSON object in {path}")
+        raise ValueError(f"Expected JSON object in {input_path}")
+
     return data
 
 
-def _load_camera_info_params(
+def _unwrap_calibration_document(data: dict[str, Any]) -> dict[str, Any]:
+    for wrapper_key in ("calibration", "depth_calibration"):
+        wrapped_value = data.get(wrapper_key)
+        if isinstance(wrapped_value, dict):
+            return wrapped_value
+
+    return data
+
+
+def _load_calibration_params(
     path: str | Path | None,
     *,
     source_translation_unit: TranslationUnit = "cm",
 ) -> dict[str, Any]:
-    """Load a calibration JSON and keep only rpc_server_depth camera-info keys.
-
-    Accepts either a raw calibration object or a wrapper like:
-        {"camera_calib": {...}}
-    Extra fields from rpc_server_camera.CameraCalibrationParams, such as
-    stereo_baseline_cm and stereo_translation_units_hint, are ignored.
-    """
+    """Load a calibration JSON and keep only fields accepted by the depth service."""
     if path is None:
         return {"source_translation_unit": source_translation_unit}
 
-    data = _read_json(path)
-    if "camera_calib" in data and isinstance(data["camera_calib"], dict):
-        data = data["camera_calib"]
-
-    params = {key: value for key, value in data.items() if key in _CAMERA_INFO_KEYS}
+    data = _unwrap_calibration_document(_read_json(path))
+    params = {key: value for key, value in data.items() if key in _CALIBRATION_KEYS}
     params["source_translation_unit"] = str(params.get("source_translation_unit") or source_translation_unit)
     return params
 
@@ -200,39 +201,38 @@ def _to_pcd_params_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "save_binary_pcd": not bool(args.ascii_pcd),
     }
 
-    backend_params = _backend_params_from_args(args, default_for_set=False)
-    params.update(backend_params)
+    params.update(_backend_params_from_args(args, default_for_set=False))
 
     if args.max_depth_m is not None:
         params["max_depth_m"] = float(args.max_depth_m)
     else:
         params["max_depth_m"] = None
 
-    if args.inline_calib:
-        params["camera_calib"] = _load_camera_info_params(
-            args.calib_json,
+    if args.inline_calibration:
+        params["calibration"] = _load_calibration_params(
+            args.calibration_json,
             source_translation_unit=args.source_translation_unit,
         )
 
     return params
 
 
-def run_camera_info_client(*, timeout_s: float = 5.0) -> Any:
+def run_calibration_info_client(*, timeout_s: float = 5.0) -> Any:
     configure_file_logging()
     api = DepthRpcApi.discover()
-    return api.call_and_print("camera_info", timeout_s=timeout_s)
+    return api.call_and_print("calibration", timeout_s=timeout_s)
 
 
-def run_set_camera_info_client(
+def run_set_calibration_client(
     *,
-    calib_json: str | Path | None = None,
+    calibration_json: str | Path | None = None,
     source_translation_unit: TranslationUnit = "cm",
     timeout_s: float = 5.0,
 ) -> Any:
     configure_file_logging()
     api = DepthRpcApi.discover()
-    params = _load_camera_info_params(calib_json, source_translation_unit=source_translation_unit)
-    return api.call_and_print("set_camera_info", params=params, timeout_s=timeout_s)
+    params = _load_calibration_params(calibration_json, source_translation_unit=source_translation_unit)
+    return api.call_and_print("set_calibration", params=params, timeout_s=timeout_s)
 
 
 def run_backend_info_client(*, timeout_s: float = 5.0) -> Any:
@@ -252,12 +252,12 @@ def run_to_pcd_client(args: argparse.Namespace) -> Any:
     configure_file_logging()
     api = DepthRpcApi.discover()
 
-    if args.calib_json and not args.inline_calib:
-        camera_info = _load_camera_info_params(
-            args.calib_json,
+    if args.calibration_json and not args.inline_calibration:
+        calibration_params = _load_calibration_params(
+            args.calibration_json,
             source_translation_unit=args.source_translation_unit,
         )
-        api.call_and_print("set_camera_info", params=camera_info, timeout_s=args.timeout_s)
+        api.call_and_print("set_calibration", params=calibration_params, timeout_s=args.timeout_s)
 
     params = _to_pcd_params_from_args(args)
     return api.call_and_print("to_pcd", params=params, timeout_s=args.timeout_s)
@@ -265,7 +265,7 @@ def run_to_pcd_client(args: argparse.Namespace) -> Any:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Minimal RGB + stereo image paths -> PCD JSON-RPC CLI",
+        description="Minimal RGB + stereo image paths -> PCD/NPZ JSON-RPC CLI",
     )
     parser.add_argument(
         "mode",
@@ -273,8 +273,9 @@ def build_parser() -> argparse.ArgumentParser:
             "server",
             "serve",
             "info",
-            "camera-info",
-            "set-info",
+            "calibration",
+            "calibration-info",
+            "set-calibration",
             "backend",
             "backend-info",
             "set-backend",
@@ -282,7 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
             "convert",
             "client",
         ],
-        help="Run the RPC server, inspect/set calibration/backend, or convert image paths to PCD.",
+        help="Run the RPC server, inspect/set calibration/backend, or convert image paths to PCD/NPZ.",
     )
     parser.add_argument("--server-name", default="depth")
 
@@ -294,15 +295,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-path",
         dest="output_path",
         default="colored_cloud.pcd",
-        help="Output .pcd path.",
+        help="Output .pcd or .npz path.",
     )
 
     parser.add_argument(
+        "--calibration-json",
         "--calib-json",
-        "--camera-calib-json",
-        dest="calib_json",
+        dest="calibration_json",
         default=None,
-        help="Optional camera calibration JSON. Used by set-info or before to-pcd.",
+        help="Optional calibration JSON. Used by set-calibration or before to-pcd.",
     )
     parser.add_argument(
         "--source-translation-unit",
@@ -311,9 +312,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Unit for calibration extrinsic translations. Luxonis calibration is usually cm.",
     )
     parser.add_argument(
-        "--inline-calib",
+        "--inline-calibration",
         action="store_true",
-        help="Send --calib-json inside depth.to_pcd instead of first calling depth.set_camera_info.",
+        help="Send --calibration-json inside depth.to_pcd instead of first calling depth.set_calibration.",
     )
 
     parser.add_argument(
@@ -344,7 +345,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-frame", choices=["left", "left_rectified"], default="left")
     parser.add_argument("--ascii-pcd", action="store_true", help="Write ASCII PCD instead of binary PCD.")
 
-    # Fast-FoundationStereo / pcd_dnn_utils options.
     parser.add_argument("--repo-dir", default=None, help="Fast-FoundationStereo repo directory. DNN only.")
     parser.add_argument("--model-path", default=None, help="Fast-FoundationStereo .pth checkpoint path. DNN only.")
     parser.add_argument("--model-dir", default=None, help="Directory containing the Fast-FoundationStereo checkpoint. DNN only.")
@@ -362,7 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--keep-invisible",
         action="store_true",
-        help="DNN only: keep pixels whose corresponding right-camera u coordinate falls outside the image.",
+        help="DNN only: keep pixels whose corresponding right-side u coordinate falls outside the image.",
     )
 
     parser.add_argument("--timeout-s", type=float, default=300.0, help="RPC timeout in seconds.")
@@ -377,14 +377,17 @@ def main() -> None:
         args.max_depth_m = None
 
     if mode in {"server", "serve"}:
-        from rpc_server_depth import run_server
+        try:
+            from rpc_server_depth import run_server
+        except ImportError:  # pragma: no cover - useful when this file is run before being renamed
+            from rpc_server_depth_refactored import run_server
 
         run_server(controller_name=args.server_name)
-    elif mode in {"info", "camera-info"}:
-        run_camera_info_client(timeout_s=args.timeout_s)
-    elif mode == "set-info":
-        run_set_camera_info_client(
-            calib_json=args.calib_json,
+    elif mode in {"info", "calibration", "calibration-info"}:
+        run_calibration_info_client(timeout_s=args.timeout_s)
+    elif mode == "set-calibration":
+        run_set_calibration_client(
+            calibration_json=args.calibration_json,
             source_translation_unit=args.source_translation_unit,
             timeout_s=args.timeout_s,
         )
@@ -401,51 +404,38 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-# Example:
-
-# ```bash
-# python cli_depth.py server
-# ```
-
+# Examples:
+#
+# Start the server:
+#   python cli_depth.py server
+#
 # Set backend once:
-
-# ```bash
-# python cli_depth.py set-backend --backend sgbm
-# ```
-
+#   python cli_depth.py set-backend --backend sgbm
+#
 # Or set DNN once:
-
-# ```bash
-# python cli_depth.py set-backend \
-#   --dnn \
-#   --repo-dir /path/to/Fast-FoundationStereo \
-#   --model-path /path/to/Fast-FoundationStereo/weights/23-36-37/model_best_bp2_serialize.pth \
-#   --model-scale 0.5
-# ```
-
+#   python cli_depth.py set-backend \
+#     --dnn \
+#     --repo-dir /path/to/Fast-FoundationStereo \
+#     --model-path /path/to/Fast-FoundationStereo/weights/23-36-37/model_best_bp2_serialize.pth \
+#     --model-scale 0.5
+#
 # Check current backend:
-
-# ```bash
-# python cli_depth.py backend
-# ```
-
-# Then convert without specifying backend:
-
-# ```bash
-# python cli_depth.py to-pcd \
-#   --left left.png \
-#   --right right.png \
-#   --rgb rgb.png \
-#   --output colored_cloud.pcd
-# ```
-
-# You can still override for one call:
-
-# ```bash
-# python cli_depth.py to-pcd \
-#   --backend sgbm \
-#   --left left.png \
-#   --right right.png \
-#   --rgb rgb.png \
-#   --output colored_cloud_sgbm.pcd
-# ```
+#   python cli_depth.py backend
+#
+# Check current calibration:
+#   python cli_depth.py calibration-info
+#
+# Convert without specifying backend:
+#   python cli_depth.py to-pcd \
+#     --left left.png \
+#     --right right.png \
+#     --rgb rgb.png \
+#     --output colored_cloud.pcd
+#
+# Override backend for one call:
+#   python cli_depth.py to-pcd \
+#     --backend sgbm \
+#     --left left.png \
+#     --right right.png \
+#     --rgb rgb.png \
+#     --output colored_cloud_sgbm.pcd
