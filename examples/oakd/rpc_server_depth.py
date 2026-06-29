@@ -62,6 +62,52 @@ def _depth_stats(points_m: np.ndarray) -> tuple[float | None, float | None, floa
     z = z[np.isfinite(z)]
     return (None, None, None) if not z.size else tuple(float(x) for x in (z.min(), z.max(), z.mean()))
 
+def _read_image_or_npy(path: str | Path, *, color: bool) -> np.ndarray:
+    p = Path(path)
+
+    if p.suffix.lower() == ".npy":
+        arr = np.load(p, allow_pickle=False)
+
+        if color:
+            if arr.ndim != 3 or arr.shape[2] < 3:
+                raise ValueError(
+                    f"Expected color .npy image with shape HxWx3 or HxWx4, "
+                    f"got {arr.shape} from {p}"
+                )
+            arr = arr[:, :, :3]
+        else:
+            if arr.ndim == 2:
+                pass
+            elif arr.ndim == 3 and arr.shape[2] == 1:
+                arr = arr[:, :, 0]
+            else:
+                raise ValueError(
+                    f"Expected grayscale .npy image with shape HxW or HxWx1, "
+                    f"got {arr.shape} from {p}"
+                )
+
+        return np.ascontiguousarray(arr)
+
+    return read_image(p, color=color)
+
+
+def _save_cloud_npz(path: str | Path, cloud: Any) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    arrays: dict[str, np.ndarray] = {
+        "points_m": np.asarray(cloud.points_m),
+        "colors_rgb": np.asarray(cloud.colors_rgb),
+    }
+
+    if cloud.disparity is not None:
+        arrays["disparity"] = np.asarray(cloud.disparity)
+
+    # Important: uncompressed .npz. Much faster than np.savez_compressed().
+    np.savez(path, **arrays)
+
+    return path
+
 
 class DepthBaseModel(RpcModel):
     service: Literal["serverDepth"] = "serverDepth"
@@ -144,7 +190,7 @@ class ToPcdResult(DepthBaseModel):
     output_path: str
     point_count: int
     color_count: int
-    pcd_size_bytes: int
+    size_bytes: int
     depth_min_m: float | None = None
     depth_max_m: float | None = None
     depth_mean_m: float | None = None
@@ -226,16 +272,22 @@ class DepthController:
 
     def to_pcd(self, params: ToPcdParams) -> ToPcdResult:
         output_path = Path(params.output_path)
-        if output_path.suffix.lower() != ".pcd":
-            raise ValueError(f"output_path must end with .pcd, got: {output_path}")
+        output_suffix = output_path.suffix.lower()
+
+        if output_suffix not in {".pcd", ".npz"}:
+            raise ValueError(f"output_path must end with .pcd or .npz, got: {output_path}")
 
         backend = self._effective_backend(params)
         common = dict(
-            left_image=read_image(params.left_path, color=False),
-            right_image=read_image(params.right_path, color=False),
-            rgb_image=read_image(params.rgb_path, color=True),
+            left_image=_read_image_or_npy(params.left_path, color=False),
+            right_image=_read_image_or_npy(params.right_path, color=False),
+            rgb_image=_read_image_or_npy(params.rgb_path, color=True),
             calibration=self._calibration(params.camera_calib),
-            output_path=output_path,
+
+            # For .pcd, let the existing utility save the file.
+            # For .npz, do not ask pcd_utils to save, because it only supports point-cloud formats.
+            output_path=output_path if output_suffix == ".pcd" else None,
+
             min_disparity=float(params.min_disparity),
             max_depth_m=params.max_depth_m,
             stride=params.stride,
@@ -258,6 +310,9 @@ class DepthController:
         else:
             raise ValueError(f"Unsupported backend: {backend.backend}")
 
+        if output_suffix == ".npz":
+            _save_cloud_npz(output_path, cloud)
+
         depth_min_m, depth_max_m, depth_mean_m = _depth_stats(cloud.points_m)
         h, w = (None, None) if cloud.disparity is None else cloud.disparity.shape[:2]
         return ToPcdResult(
@@ -265,7 +320,7 @@ class DepthController:
             output_path=str(output_path),
             point_count=int(cloud.points_m.shape[0]),
             color_count=int(cloud.colors_rgb.shape[0]),
-            pcd_size_bytes=int(output_path.stat().st_size),
+            size_bytes=int(output_path.stat().st_size),
             depth_min_m=depth_min_m,
             depth_max_m=depth_max_m,
             depth_mean_m=depth_mean_m,

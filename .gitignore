@@ -181,3 +181,5 @@ cython_debug/
 .cursorindexingignore
 /examples/oakd/test
 /examples/oakd/fast-foundationstereo
+*.npz
+*.pcd

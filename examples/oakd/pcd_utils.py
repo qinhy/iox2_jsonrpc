@@ -1018,6 +1018,52 @@ def save_point_cloud(
     raise ValueError("Unsupported point-cloud extension. Use .pcd or .ply")
 
 
+def npz_to_pcd(
+    input_npz: str | Path,
+    output_path: str | Path,
+    *,
+    binary_pcd: bool = True,
+) -> Path:
+    input_npz = Path(input_npz)
+    output_path = Path(output_path)
+
+    if input_npz.suffix.lower() != ".npz":
+        raise ValueError(f"input_npz must end with .npz, got: {input_npz}")
+
+    if output_path.suffix.lower() not in {".pcd", ".ply"}:
+        raise ValueError(f"output_path must end with .pcd or .ply, got: {output_path}")
+
+    with np.load(input_npz, allow_pickle=False) as z:
+        if "points_m" not in z:
+            raise KeyError(f"{input_npz} does not contain 'points_m'")
+        if "colors_rgb" not in z:
+            raise KeyError(f"{input_npz} does not contain 'colors_rgb'")
+
+        points_m = np.asarray(z["points_m"])
+        colors_rgb = np.asarray(z["colors_rgb"])
+
+    if points_m.ndim != 2 or points_m.shape[1] != 3:
+        raise ValueError(f"points_m must have shape Nx3, got {points_m.shape}")
+
+    if colors_rgb.ndim != 2 or colors_rgb.shape[1] < 3:
+        raise ValueError(f"colors_rgb must have shape Nx3, got {colors_rgb.shape}")
+
+    if points_m.shape[0] != colors_rgb.shape[0]:
+        raise ValueError(
+            f"points/colors length mismatch: "
+            f"{points_m.shape[0]} points vs {colors_rgb.shape[0]} colors"
+        )
+
+    save_point_cloud(
+        output_path,
+        points_m,
+        colors_rgb,
+        binary_pcd=binary_pcd,
+    )
+
+    return output_path
+
+
 def stereo_rgb_to_colored_point_cloud(
     left_image: np.ndarray,
     right_image: np.ndarray,
